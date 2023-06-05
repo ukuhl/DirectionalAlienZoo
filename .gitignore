@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.sqlite
+*.log
+*.out
+*.aux
+*.bbl
+*.blg
+*.pdf
+*.synctex.gz
+*.Rhistory
+*.DS_store

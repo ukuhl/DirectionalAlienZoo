@@ -1,0 +1,1404 @@
+---
+title: "Directional Alien Zoo: Summary of evaluation and results (April 2023)"
+output: 
+  pdf_document:
+    toc: TRUE
+    toc_depth: 5
+bibliography: DirAlienZoo.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r results='asis', echo=FALSE, include=FALSE,}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+
+library(rstudioapi)
+library(ggplot2)
+library(ggrepel)
+library(plyr)
+library(dplyr)
+# Suppress summarise info
+options(dplyr.summarise.inform = FALSE)
+library(unikn)
+library(ggpubr)
+library(data.table)
+library(tidyverse)
+library(scales)
+library(effsize)
+
+# for the lme approach:
+library("emmeans")
+library("sjstats")
+library("lme4")
+library("lmerTest")
+library("MuMIn")
+
+# turn off scientific notation for exact values
+options(scipen = 999)
+
+# set an empty string to save all information
+matchingRes=""
+matchingRes="Comparison,TestUsed,TestPval,TestStatistic,TestEffSize"
+
+# source adapted wilcoxon test (easy computation of effect size) 
+source("uk_wilcox.test.R")
+
+# produced with the venngage Accessible color palette generator: https://venngage.com/tools/accessible-color-palette-generator
+venngage_palette <- c(rgb( 237, 144, 119, maxColorValue = 255),  # red-ish
+                rgb(246, 193, 107, maxColorValue = 255),  # orange
+                rgb(224, 235, 125, maxColorValue = 255),  # lime
+                rgb(180, 232, 181, maxColorValue = 255),  # green, lighter
+                rgb(70, 216, 140, maxColorValue = 255), # green, darker
+                rgb(63, 167, 214, maxColorValue = 255) # blue
+)
+
+Ccol=venngage_palette[1]
+Dcol=venngage_palette[2]
+Mcol=venngage_palette[5]
+Ucol=venngage_palette[6]
+
+```
+
+\newpage
+
+# Introduction
+
+This is an analysis of data acquired in the "Directional Alien Zoo" study run on Prolific in April 2023. In this study, naive users were asked to interact with the Alien Zoo paradigm to understand relationships in an unknown dataset.
+In regular intervals, participants receive either upward, downward, or mixes counterfactual explanations (CFEs) regarding past choices, or no explanation.
+
+# First things first: rough data cleaning
+
+Let's first just look at the data we have. Excluding all users that had incomplete datasets, what is the turnout? 
+
+```{r echo=FALSE, warning=FALSE}
+
+# Set working directory to source file location
+sourceLoc=here::set_here()
+setwd(dirname(sourceLoc))
+
+# Where's the data
+demo_source = list.files(path = "../UserData", pattern="demographics.csv",full.names=TRUE)
+perf_source = list.files(path = "../UserData", pattern="performance.csv",full.names=TRUE)
+survey_source = list.files(path = "../UserData", pattern="survey.csv",full.names=TRUE)
+attention_source = list.files(path = "../UserData", pattern="attentionCheck.csv",full.names=TRUE)
+
+# load to dframes
+df_demo=read.csv(demo_source,header=TRUE)
+df_perf=read.csv(perf_source,header=TRUE)
+df_survey=read.csv(survey_source,header=TRUE)
+df_attention=read.csv(attention_source,header=TRUE)
+
+# remove duplicated lines (double-logging happens occasionally)
+df_demo=df_demo[!duplicated(df_demo),]
+df_perf=df_perf[!duplicated(df_perf), ]
+df_survey=df_survey[!duplicated(df_survey), ]
+df_attention=df_attention[!duplicated(df_attention), ]
+
+# truncate user IDs after 5 characters for better visualization
+df_demo$userId=substr(df_demo$userId,1,5)
+df_perf$userId=substr(df_perf$userId,1,5)
+df_survey$userId=substr(df_survey$userId,1,5)
+df_attention$userId=substr(df_attention$userId,1,5)
+
+# group as factor, recode values to more descriptive letters
+df_demo$group=as.factor(df_demo$group)
+df_demo$group=recode_factor(df_demo$group,"0"="C","1"="U","2"="D","3"="M")
+df_perf$group=as.factor(df_perf$group)
+df_perf$group=recode_factor(df_perf$group,"0"="C","1"="U","2"="D","3"="M")
+df_survey$group=as.factor(df_survey$group)
+df_survey$group=recode_factor(df_survey$group,"0"="C","1"="U","2"="D","3"="M")
+df_attention$group=as.factor(df_attention$group)
+df_attention$group=recode_factor(df_attention$group,"0"="C","1"="U","2"="D","3"="M")
+
+# drop fields 'X' if present (was problem with simulated data)
+if("X" %in% colnames(df_perf)){
+df_demo=subset(df_demo,select=-c(X))
+df_perf=subset(df_perf,select=-c(X))
+df_survey=subset(df_survey,select=-c(X))
+df_attention=subset(df_attention,select=-c(X))
+}
+
+# correct item number in survey df if zero based
+if(0 %in% df_survey$itemNo){
+df_survey$itemNo=df_survey$itemNo+1
+}
+
+# sanity check: Number of users in each df the same?
+# make df with user numbers: user ID 'XXXX' appears in how many dfs?
+# CAVEAT: there were logging difficulties with the survey data from some participants
+# consequently, we will evaluate game data first, and survey data second
+# the value of 3 would be desireable: all IDs represented in dfs df_perf, df_attention, df_demo
+userNo_raw <- data.frame(table(c(unique(df_perf$userId), unique(df_attention$userId),c(unique(df_demo$userId)))))
+names(userNo_raw) <- c("Names", "Matches")
+
+# Now, remove participants who are not present in dfs df_perf, df_attention, df_demo
+df_perf=df_perf[!df_perf$userId %in% userNo_raw$Names[!userNo_raw$Matches==3],]
+df_attention=df_attention[!df_attention$userId %in% userNo_raw$Names[!userNo_raw$Matches==3],]
+
+# sort according to user ID and trial number:
+df_perf=df_perf[order(df_perf$userId, df_perf$trialNo),]
+df_attention=df_attention[order(df_attention$userId, df_attention$trialNo),]
+
+# design specs to make some things easier:
+numTrials=max(df_perf$trialNo)
+numAttentionTrials=2
+
+# number of trials per userId:
+df_perf_trialsPerUser=aggregate(trialNo ~ userId, data = df_perf, FUN = function(x){NROW(x)})
+df_attention_trialsPerUser=aggregate(trialNo ~ userId, data = df_attention, FUN = function(x){NROW(x)})
+
+# collect "odd" userIDs (not enough attention trials, not all number of decision trials):
+odd_userIDs=unique(c(df_perf_trialsPerUser$userId[!df_perf_trialsPerUser$trialNo==numTrials],
+  df_attention_trialsPerUser$userId[!df_attention_trialsPerUser$trialNo==numAttentionTrials]))
+
+# remove odd users from all dfs:
+df_perf=df_perf[!df_perf$userId %in% odd_userIDs,]
+df_attention=df_attention[!df_attention$userId %in% odd_userIDs,]
+df_demo=df_demo[!df_demo$userId %in% odd_userIDs,]
+
+```
+
+## General infos after removal of incomplete datasets
+
+How many users do we have in our performance df before any cleaning (i.e., also including users with incomplete datasets)? `r length(userNo_raw$Names)`
+
+After cleaning, we have `r length(unique(df_perf$userId))` participants. Of those, 
+
+* `r length(unique(df_perf$userId[df_perf$group=="C"]))` participants were in the control condition,
+* `r length(unique(df_perf$userId[df_perf$group=="U"]))` participants in the upwards condition.
+* `r length(unique(df_perf$userId[df_perf$group=="D"]))` participants in the downwards condition.
+* `r length(unique(df_perf$userId[df_perf$group=="M"]))` participants in the mixed condition.
+
+## Check covariates across groups
+
+Additionally to assessing performance, we also acquire age and gender information of participants.
+How do our groups look like? Are the groups comparable?
+
+```{r echo=FALSE, warning=FALSE,fig.height = 4, fig.width = 3.5}
+
+# get only age info
+df_demo_age = df_demo[df_demo$item=='age',]
+df_demo_gender = df_demo[df_demo$item=='gender',]
+
+# summarize to get overview values of frequencies and percentages
+df_demo_age_summary=dplyr::summarise(group_by(df_demo_age, group, item, responseNo),
+          SumChecks=sum(checked),
+          PercUsersChecked=100*(sum(checked)/length(unique(userId))))
+
+# summarize to get overview values of frequencies and percentages
+df_demo_gender_summary=dplyr::summarise(group_by(df_demo_gender, group, item, responseNo),
+          SumChecks=sum(checked),
+          PercUsersChecked=100*(sum(checked)/length(unique(userId))))
+
+# convert to factor for proper plotting:
+df_demo_age_summary$responseNo=as.factor(df_demo_age_summary$responseNo)
+df_demo_gender_summary$responseNo=as.factor(df_demo_gender_summary$responseNo)
+
+# AGE: display frequency as raw counts
+CovAge_FreqUserResponses = ggplot(data=df_demo_age_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = SumChecks),stat="identity",position = position_dodge(preserve = "single"))+
+  labs(title="Age of participants (freq. counts)",x="", y = "Frequency of answer")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:7, labels=c("18-24y","25-34y","35-44y","45-54y","55-64y","65 and\nover","Prefer not\nto answer"))+
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 60,hjust = 0.95))
+
+# AGE: display frequency as percentage
+CovAge_PercUserResponses = ggplot(data=df_demo_age_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = PercUsersChecked),stat="identity",position = position_dodge(preserve = "single"))+
+  labs(title="Age of participants (% of users)",x="", y = "% of users")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:7, labels=c("18-24y","25-34y","35-44y","45-54y","55-64y","65 and\nover","Prefer not\nto answer"))+
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 60,hjust = 0.95))
+
+# put plots together
+figure_CovAgeRaw <- ggarrange(CovAge_FreqUserResponses,CovAge_PercUserResponses,
+                    ncol = 1, nrow = 2, align = "v")
+# save
+ggsave("Figures/CovAgeRaw_distribution.pdf",width = 9, height = 7,)
+
+# show 
+figure_CovAgeRaw
+
+# GENDER: display frequency as raw counts
+CovGender_FreqUserResponses = ggplot(data=df_demo_gender_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = SumChecks),stat="identity",position = position_dodge(preserve = "single"))+
+  labs(title="Gender of participants (freq. counts)",x="", y = "Frequency of answer")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:4, labels=c("Female","Male","Non-binary/\n gender non-\nconforming","Prefer not\nto answer"))+
+  ylim(0, 40)+
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 60,hjust = 0.95))
+
+# GENDER: display frequency as percentage
+CovGender_PercUserResponses = ggplot(data=df_demo_gender_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = PercUsersChecked),stat="identity",position = position_dodge(preserve = "single"))+
+  labs(title="Gender of participants (% of users)",x="", y = "% of users")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:4, labels=c("Female","Male","Non-binary/\n gender non-\nconforming","Prefer not\nto answer"))+
+  #ylim(0, 70)+
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 60,hjust = 0.95))
+
+# put plots together 
+figure_CovGenderRaw <- ggarrange(CovGender_FreqUserResponses,CovGender_PercUserResponses,
+                    ncol = 1, nrow = 2, align = "v")
+# save
+ggsave("Figures/CovGenderRaw_distribution.pdf",width = 9, height = 7,)
+
+# show 
+figure_CovGenderRaw
+```
+
+Let's run a statistical comparison between our two groups. For age, we have ordinal data (in age bands), so we will use a non-parametric statistical test for ordinal data, that's the Wilcoxon–Mann–Whitney U test.
+
+For gender, we need to check if data is normally distributed. If so, use a ttest, if not, we will also use the non-parametric Wilcoxon–Mann–Whitney U.
+
+```{r echo=FALSE, warning=FALSE}
+
+# statistical differences between groups?
+library(rstatix)
+
+# get median age per group for reporting
+medianAge_C=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="C"])
+medianAge_U=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="U"])
+medianAge_D=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="D"])
+medianAge_M=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="M"])
+# inspect: we have 40 people per group, in which group does the 20th person lie?
+
+# count users who 'prefered not to answer'
+N_noAnswer_age=nrow(df_demo_age[df_demo_age$responseNo==7 & df_demo_age$checked==1,])
+N_noAnswer_gender=nrow(df_demo_gender[df_demo_gender$responseNo==4 & df_demo_gender$checked==1,])
+# remove 'prefer not to answer' entries
+df_demo_age = df_demo_age[!df_demo_age$responseNo==7,]
+df_demo_age_responses=df_demo_age[!df_demo_age$checked==0,]
+
+df_demo_gender = df_demo_gender[!df_demo_gender$responseNo==4,]
+df_demo_gender_responses=df_demo_gender[!df_demo_gender$checked==0,]
+
+# Age first: 
+
+# check sample sizes, make sure they deviate not too much:
+N_C_age=sum(df_demo_age_responses$group=='C')
+N_U_age=sum(df_demo_age_responses$group=='U')
+N_D_age=sum(df_demo_age_responses$group=='D')
+N_M_age=sum(df_demo_age_responses$group=='M')
+
+aget="KruskalWallis"
+agetest=df_demo_age_responses %>% kruskal_test(responseNo ~ group)
+ageeffsize=df_demo_age_responses %>% kruskal_effsize(responseNo ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","AgeRaw",sep=""),aget,agetest$p,agetest$statistic,ageeffsize$effsize,sep = ",")
+
+# Gender second: 
+# check sample sizes, make sure they deviate not too much:
+N_C_gender=sum(df_demo_gender_responses$group=='C')
+N_U_gender=sum(df_demo_gender_responses$group=='U')
+N_D_gender=sum(df_demo_gender_responses$group=='D')
+N_M_gender=sum(df_demo_gender_responses$group=='M')
+
+# NOTE: normality test with KruskalWallis not necessary!
+
+gent="KruskalWallis"
+gentest=df_demo_gender_responses %>% kruskal_test(responseNo ~ group)
+geneffsize=df_demo_gender_responses %>% kruskal_effsize(responseNo ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","GenderRaw",sep=""),gent,gentest$p,gentest$statistic, geneffsize$effsize,sep = ",")
+
+```
+
+We acquired data from `r length(unique(df_demo$userId))` participants, with 
+
+`r length(unique(df_demo$userId[df_demo$group=="C"]))` users in the control group (`r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, `r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==3]))` non-binary / gender non-conforming, median age group is 35-44years), and 
+
+`r length(unique(df_demo$userId[df_demo$group=="U"]))` users in the upwards group (`r length(unique(df_demo$userId[df_demo$group=="U" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="U" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, median age group is 35-44years), and
+
+`r length(unique(df_demo$userId[df_demo$group=="D"]))` users in the upwards group (`r length(unique(df_demo$userId[df_demo$group=="D" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="D" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, median age group is 25-34years), and
+
+`r length(unique(df_demo$userId[df_demo$group=="M"]))` users in the upwards group (`r length(unique(df_demo$userId[df_demo$group=="M" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="M" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, median age group is 25-34years).
+
+The analysis showed for *Age*:
+
+* We have age information for `r N_C_age` users in the control group, and `r N_U_age`, `r N_D_age`, `r N_M_age` users in the upward, downward and mixed conditions, respectively.
+
+* Is there a significant difference in terms of age between the groups? We compared ages of users in explanation condition and users in the control condition using a `r aget` test. This showed: U=`r agetest$statistic `, p=`r agetest$p.value `, r = `r ageeffsize `
+  
+The analysis showed for *Gender*:
+
+* We have age information for `r N_C_gender` users in the control group, and `r N_U_gender`, `r N_D_gender`, `r N_M_gender` users in the upward, downward and mixed conditions, respectively.
+
+* Is there a significant difference in terms of gender between the groups? We compared gender distribution of users in explanation condition and users in the control condition using a `r gent` test. This showed
+
+  + for wilcoxon test: U=`r gentest$statistic `, p=`r gentest$p.value `, r = `r geneffsize `
+
+## Quality criteria
+
+Before going into the hypotheses, we should apply some quality criteria to our data. Sub-quality data should be removed. The following subsections take care of such cases.
+
+### Identify participants failing the two attention checks
+
+We include 2 attention checks during the game by asking participants to indicate current pack size after trials 3 and 7.
+
+Aim: Identify IDs of users getting either one or both checks wrong; exclude those getting both wrong.
+
+```{r echo=FALSE}
+
+# identify correct and incorrect replies
+df_attention$correctReply = df_attention$userInput == df_attention$shubNo
+
+# obtain IDs of participants that got 1 wrong
+attentionFailOne_IDs=as.character(unique(df_attention$userId[!df_attention$correctReply]))
+
+# obtain IDs of participants that got both wrong
+attentionFailBoth_IDs=as.character(df_attention$userId[!df_attention$correctReply][duplicated(df_attention$userId[!df_attention$correctReply])])
+
+# look at performance data of non-attentive users:
+# df_perf[df_perf$userId %in% attentionFailBoth_IDs,]
+
+# Second attention check: did users detect the "red hering" question (item 7); also consider removing those who did not!
+# set to data table
+dt_survey=setDT(df_survey,key=c("userId"))
+attentionFailSurvey = dt_survey[ checked == 1 & itemNo == 7 & !responseNo==6 ]
+attentionFailSurvey_IDs=attentionFailSurvey$userId
+
+# look at performance data of non-attentive users:
+# df_perf[df_perf$userId %in% attentionFailSurvey_IDs,]
+
+```
+
+### Identify "straight-liners" in game part
+
+Identify users who always give the same answer in the game part (over individual blocks, and over all blocks) DESPITE not increasing their pack size.
+
+Aim: identify IDs of users "straight-lining" in at least two blocks, while pack size did not change (i.e., who were "immune to feedback").
+
+```{r echo=FALSE}
+
+# set to data table
+dt_perf=setDT(df_perf,key=c("userId", "blockNo"))
+
+# collect info on mismatched values across blocks
+# mismatch = TRUE is good, meaning there is variation in input data
+straightlineGame_data=merge(merge(merge(merge(merge(
+  dt_perf[,list(mismatchP1=length(unique(plant1))>1),keyby=.(userId,blockNo)],
+  dt_perf[,list(mismatchP2=length(unique(plant2))>1),keyby=.(userId,blockNo)],by=c("userId", "blockNo")),
+  dt_perf[,list(mismatchP3=length(unique(plant3))>1),keyby=.(userId,blockNo)],by=c("userId", "blockNo")),
+  dt_perf[,list(mismatchP4=length(unique(plant4))>1),keyby=.(userId,blockNo)],by=c("userId", "blockNo")),
+  dt_perf[,list(mismatchP5=length(unique(plant5))>1),keyby=.(userId,blockNo)],by=c("userId", "blockNo")),
+  dt_perf[,list(mismatchShubNoNew=length(unique(shubNoNew))>1),keyby=.(userId,blockNo)],by=c("userId", "blockNo"))
+
+# keep only rows without any mismatches (i.e., blocks without variation in user input)
+straightlineGame_data=straightlineGame_data[(!straightlineGame_data$mismatchP1) & (!straightlineGame_data$mismatchP2) & (!straightlineGame_data$mismatchP3) & (!straightlineGame_data$mismatchP4) & (!straightlineGame_data$mismatchP5) & (!straightlineGame_data$mismatchShubNoNew), ]
+
+# count occurences of userIDs
+straightlinersGame_IDs=straightlineGame_data %>% count(userId)   
+# keep only IDs of users straight-lining in at least 3 blocks (i.e. half the blocks)
+straightlinersGame_IDs=straightlinersGame_IDs[(straightlinersGame_IDs$n > 2), ]
+straightlinersGame_IDs=as.character(straightlinersGame_IDs$userId)
+
+# look at performance data of game-straightliners:
+# df_perf[df_perf$userId %in% straightlinersGame_IDs,]
+
+```
+
+### Remove data from problematic users
+
+As we have identified users that seem to have dodgy data, we want to remove them.
+
+```{r echo=FALSE}
+
+attentionFailBoth_IDs_clean=attentionFailBoth_IDs
+
+df_perf=subset(df_perf, ! userId %in% attentionFailBoth_IDs_clean)
+df_survey=subset(df_survey, ! userId %in% attentionFailBoth_IDs_clean)
+df_attention=subset(df_attention, ! userId %in% attentionFailBoth_IDs_clean)
+df_demo=subset(df_demo, ! userId %in% attentionFailBoth_IDs_clean)
+
+# remove attentionFailers (survey check), that were not already recognized as speeders or game AFs
+attentionFailSurvey_IDs_clean=attentionFailSurvey_IDs[!attentionFailSurvey_IDs %in% c(attentionFailBoth_IDs_clean)]
+
+df_perf=subset(df_perf, ! userId %in% attentionFailSurvey_IDs_clean)
+df_survey=subset(df_survey, ! userId %in% attentionFailSurvey_IDs_clean)
+df_attention=subset(df_attention, ! userId %in% attentionFailSurvey_IDs_clean)
+df_demo=subset(df_demo, ! userId %in% attentionFailSurvey_IDs_clean)
+
+# remove game straightliners, that were not already recognized as speeders / attention failers
+straightlinersGame_IDs_clean=straightlinersGame_IDs[!straightlinersGame_IDs %in% c(attentionFailBoth_IDs_clean,attentionFailSurvey_IDs_clean)]
+
+df_perf=subset(df_perf, ! userId %in% straightlinersGame_IDs_clean)
+df_survey=subset(df_survey, ! userId %in% straightlinersGame_IDs_clean)
+df_attention=subset(df_attention, ! userId %in% straightlinersGame_IDs_clean)
+df_demo=subset(df_demo, ! userId %in% straightlinersGame_IDs_clean)
+
+# get number of users in clean data
+userNo_clean <- data.frame(table(c(as.character(unique(df_perf$userId)), as.character(unique(df_attention$userId)))))
+names(userNo_clean) <- c("Names", "Matches")
+
+```
+
+So to summarize:
+
+* we have `r length(userNo_raw$Names)` users to begin with
+* we remove `r sum(!userNo_raw$Matches==3)` users that have incomplete performance datasets (aborted prematurely)
+* we remove `r length(attentionFailBoth_IDs_clean)` users that failed both attention tests during the game
+* we remove `r length(attentionFailSurvey_IDs_clean)` users that failed the attention test in the survey
+* we remove `r length(straightlinersGame_IDs_clean)` users that straightlined in the game, despite not improving
+
+Finally: How many users do we have in our clean performance df? `r length(unique(df_perf$userId))`
+
+Do we have an equal number of users in each clean dataframe? `r length(unique(userNo_clean$Matches))==1`
+
+```{r echo=FALSE}
+# get age distribution after data cleaning
+# summarize to get overview values of frequencies and percentages
+df_demo_age_summary=dplyr::summarise(group_by(df_demo[df_demo$item=="age",], group, item, responseNo),
+          SumChecks=sum(checked),
+          PercUsersChecked=100*(sum(checked)/length(unique(userId))))
+
+medianAge_C=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="C"])
+medianAge_U=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="U"])
+medianAge_D=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="D"])
+medianAge_M=cumsum(df_demo_age_summary$SumChecks[df_demo_age_summary$group=="M"])
+
+```
+
+### Final, clean dataset
+
+To sum up, in our final data we have `r length(unique(df_perf$userId))` users, with: 
+
+`r length(unique(df_perf$userId[df_perf$group=="C"]))` users in the control group (`r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, `r length(unique(df_demo$userId[df_demo$group=="C" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==3]))` non-binary / gender non-conforming, median age group is 35-44years), and 
+
+`r length(unique(df_perf$userId[df_perf$group=="U"]))` users in the upward group (`r length(unique(df_demo$userId[df_demo$group=="U" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="U" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, `r length(unique(df_demo$userId[df_demo$group=="U" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==3]))` non-binary / gender non-conforming, median age group is 35-44years), and 
+
+`r length(unique(df_perf$userId[df_perf$group=="D"]))` users in the downward group (`r length(unique(df_demo$userId[df_demo$group=="D" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="D" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, `r length(unique(df_demo$userId[df_demo$group=="D" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==3]))` non-binary / gender non-conforming, median age group is 25-34years), and 
+
+`r length(unique(df_perf$userId[df_perf$group=="M"]))` users in the mixed group (`r length(unique(df_demo$userId[df_demo$group=="M" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==1]))` female, `r length(unique(df_demo$userId[df_demo$group=="M" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==2]))` male, `r length(unique(df_demo$userId[df_demo$group=="M" & df_demo$item=="gender" & df_demo$checked==1 & df_demo$responseNo==3]))` non-binary / gender non-conforming, median age group is 25-34years). 
+
+Re-check: are there still no significant differences in terms of gender / age?
+
+```{r echo=FALSE, warning=FALSE}
+
+# statistical differences between groups?
+df_demo_age=df_demo[df_demo$item=="age",]
+df_demo_gender=df_demo[df_demo$item=="gender",]
+
+# count users who 'prefered not to answer'
+N_noAnswer_age=nrow(df_demo_age[df_demo_age$responseNo==7 & df_demo_age$checked==1,])
+N_noAnswer_gender=nrow(df_demo_gender[df_demo_gender$responseNo==7 & df_demo_gender$checked==1,])
+# remove 'prefer not to answer' entries
+df_demo_age = df_demo_age[!df_demo_age$responseNo==7,]
+df_demo_age_responses=df_demo_age[!df_demo_age$checked==0,]
+
+df_demo_gender = df_demo_gender[!df_demo_gender$responseNo==7,]
+df_demo_gender_responses=df_demo_gender[!df_demo_gender$checked==0,]
+
+# Age first: 
+
+# check sample sizes, make sure they deviate not too much:
+N_C_age=sum(df_demo_age_responses$group=='C')
+N_U_age=sum(df_demo_age_responses$group=='U')
+N_D_age=sum(df_demo_age_responses$group=='D')
+N_M_age=sum(df_demo_age_responses$group=='M')
+
+aget="KruskalWallis"
+agetest=df_demo_age_responses %>% kruskal_test(responseNo ~ group)
+ageeffsize=df_demo_age_responses %>% kruskal_effsize(responseNo ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","AgeClean",sep=""),aget,agetest$p,agetest$statistic,ageeffsize$effsize,sep = ",")
+
+
+# Gender second: 
+# check sample sizes, make sure they deviate not too much:
+N_C_gender=sum(df_demo_gender_responses$group=='C')
+N_U_gender=sum(df_demo_gender_responses$group=='U')
+N_D_gender=sum(df_demo_gender_responses$group=='D')
+N_M_gender=sum(df_demo_gender_responses$group=='M')
+
+# NOTE: normality test with KruskalWallis not necessary!
+
+gent="KruskalWallis"
+gentest=df_demo_gender_responses %>% kruskal_test(responseNo ~ group)
+geneffsize=df_demo_gender_responses %>% kruskal_effsize(responseNo ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","GenderClean",sep=""),gent,gentest$p,gentest$statistic, geneffsize$effsize,sep = ",")
+
+
+```
+
+The analysis showed for *Age* in the clean dataset:
+
+* We have age information for `r N_C_age` users in the control group, and `r N_U_age`, `r N_D_age`, `r N_M_age` users in the upward, downward and mixed conditions, respectively.
+
+* Is there a significant difference in terms of age between the groups? We compared age information for users in the explanation condition and users in the control condition using a `r aget` test. This showed: U=`r agetest$statistic `, p=`r agetest$p.value `, r = `r ageeffsize `
+  
+The analysis showed for *Gender* in the clean dataset:
+
+* We have age information for `r N_C_gender` users in the control group, and `r N_U_gender`, `r N_D_gender`, `r N_M_gender` users in the upward, downward and mixed conditions, respectively.
+
+* Is there a significant difference in terms of gender between the groups? We compared gender distribution for users in explanation condition and users in the control condition using a `r gent` test. This showed
+
+  + for wilcoxon test: U=`r gentest$statistic `, p=`r gentest$p.value `, r = `r geneffsize `
+
+# Statistical assessment
+
+We use R-4.1.1[@r_core_team_r_2021] for all statistical analyses, with experimental condition (control, upward, downward, mixed) as independent variable.
+
+Given our longitudinal design, employ linear mixed models for data analysis to effectively address the correlations that arise from multiple measurements taken from each participant[@detry_analyzing_2016,@muth_alternative_2016].
+
+We investigate systematic differences between experimental groups over the 12 feeding trials (R package: lme4 v.4_1.1-27.1) [@bates_fitting_2015], with alien pack size over trials as dependent variable, fixed effects of group, trial number and their interaction, and a by-subjects random intercept.
+We compared model fits using the analysis of variance function (stats package, base R).
+Effect sizes are reported as $\eta_{\text{p}}^{2}$ (R package: effectsize v.0.5)[@ben-shachar_effectsize_2020].
+Pairwise estimated marginal means analysis followed-up significant main effects or interactions, Bonferroni corrected to account for multiple comparisons.
+We report respective effect sizes in terms of Cohen's d}.
+
+## Consideration 1: Impact of CFE directionality on user performance
+
+Let's start with a first peek at the data: Descriptive stats + plotting the pack size trajectories per trial and block for each person individually (figure not shown in .pdf).
+
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = "center"}
+
+# Descriptive stats
+
+# First peek at the data, getting min / max / median:
+print("First peek at the data, getting min / max / median:")
+print(tapply(df_perf$shubNoNew, df_perf$group, summary))
+# CHECK: What can we see here? Do groups differ wrt the range? Does one have smaller minimal values / larger maximal scores?
+
+#Next is visual assessment: Plot scores per participant per trial and also averages over blocks (aka spaghetti plot):
+
+# plot data per trial
+H1.1_p_ShubsPerTrial <- ggplot(df_perf, aes(x=factor(trialNo), y=shubNoNew, group = userId, color= group))+ 
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of pack size by group over trials",x="Trial", y = "Pack size")+
+  theme_bw(base_size = 10)+
+  #scale_y_continuous(limits = c(0, 100))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  theme(legend.position="bottom")
+
+# prepare line plot to show sd and sem
+data_summary <- function(data, varname, groupnames){
+  library(dplyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      sem = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  return(data_sum)
+}
+
+df_ShubsPerTrial_summary=data_summary(df_perf, varname="shubNoNew",groupnames=c("group","trialNo"))
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary <- ggplot(df_ShubsPerTrial_summary, aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  #labs(title="Mean pack size by group over trials",x="Trial", y = " Mean pack size")+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  theme(legend.position="bottom")
+
+# plot averaged data per block
+df_perf_blockStats<-aggregate(shubNoNew ~ blockNo * userId + group, data=df_perf, FUN = function(x) c(mean = mean(x), SEM = sd(x), sem = sd(x)/sqrt(length(x))))
+df_ShubsPerBlock_summary=data_summary(df_perf, varname="shubNoNew",groupnames=c("group","blockNo"))
+
+H1.1_p_ShubsPerBlock <- ggplot(df_perf_blockStats, aes(x=blockNo, y=shubNoNew[,"mean"], group = userId, color= group))+ 
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  #geom_ribbon(aes(ymin=shubNoNew[,"mean"]-shubNoNew[,"sem"], ymax=shubNoNew[,"mean"]+shubNoNew[,"sem"],fill=group), linetype=2, alpha=0.3)+
+  ##facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of pack size by group over blocks",x="Block", y = "pack size")+
+  theme_bw(base_size = 10)+
+  ##scale_y_continuous(limits = c(0, 100))+
+  scale_x_continuous(breaks=1:max(df_perf$blockNo))+
+  scale_colour_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  #scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  theme(legend.position="bottom")
+
+# plot data per block
+H1.1_p_ShubsPerBlock_summary <- ggplot(df_ShubsPerBlock_summary, aes(x=blockNo, y=mean, group = group, color= group))+ 
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Mean pack size by group over blocks",x="Block", y = "Mean pack size")+
+  theme_bw(base_size = 10)+
+  ##scale_y_continuous(limits = c(0, 100))+
+  scale_x_continuous(breaks=1:max(df_ShubsPerBlock_summary$blockNo))+
+  scale_colour_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,22,24,25), labels = c("control", "upward", "downward", "mixed"))+
+  theme(legend.position="bottom")
+
+# in separate facets for better visibility
+H1.1_p_ShubsPerTrial_facet <- H1.1_p_ShubsPerTrial + facet_wrap(vars(group),nrow = 2, ncol = 1) + theme_bw(base_size = 10)
+H1.1_p_ShubsPerBlock_facet <- H1.1_p_ShubsPerBlock + facet_wrap(vars(group),nrow = 2, ncol = 1) + theme_bw(base_size = 10)
+
+# put all plots together
+H1.1_figure1_ShubData <- ggarrange(H1.1_p_ShubsPerTrial,H1.1_p_ShubsPerBlock,
+                    ncol = 1, nrow = 2, heights=c(4,4), common.legend = TRUE)
+
+# save
+ggsave("Figures/H1.1_figure1_ShubData.pdf",width = 5, height = 4,)
+
+H1.1_figure1_ShubData_summary <- ggarrange(H1.1_p_ShubsPerTrial_summary,H1.1_p_ShubsPerBlock_summary,
+                    ncol = 1, nrow = 2, heights=c(4,4), common.legend = TRUE)
+# save
+ggsave("Figures/H1.1_figure1_ShubData_summary.pdf",width = 5, height = 4,)
+
+# show
+print("Display figures showing development of pack size over trials / blocks:")
+#H1.1_figure1_ShubData
+H1.1_figure1_ShubData_summary
+
+# last, make trialno a factor and show again a summary of data
+df_perf$trialNo = as.factor(df_perf$trialNo)
+#summary(df_perf)
+
+```
+
+Now on to the statistics.
+
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = "center"}
+
+# Setting up our LME model (as a 4x12 Anova, group by trial)
+# We use a mixed design, with one within-subjects IV (trial) and one between subjects IV (group),
+# investigating the effect of both on Shubs generated.
+# Note that we add a random intercept for the participant by stating + (1|userId)
+# This makes it repeated measures, as we control for the random effect of 
+# one person doing something multiple times.
+df_perf$trialNo = as.factor(df_perf$trialNo)
+df_perf$group=as.factor(df_perf$group)
+
+ShubNo_effect= lmer(shubNoNew ~ trialNo*group + (1|userId), data = df_perf) # linear model DV ShubNoNew predicted by the IV (trials, i.e. time)
+
+ShubNo_effect_anova=anova(ShubNo_effect)  # show model as anova
+names(ShubNo_effect_anova)=c("SumSq","MeanSq","NumDF","DenDF","Fvalue","Pvalue") # rename fields for easy access
+print("ANOVA table:")
+print(ShubNo_effect_anova)
+
+ShubNo_effect_effsize=effectsize::eta_squared(ShubNo_effect,partial = TRUE) # effect size eta squared
+ShubNo_effect_r2=r.squaredGLMM(ShubNo_effect) # R^2, gives 2 values: R2m = effect of IV; R2c = effect of IV and random effect
+
+# REMEMBER: WHEN THERE IS A SINGIFICANT INTERACTION, DO NOT INTEPRET THE MAIN EFFECT ANYMORE (report it, though).
+
+# POST-HOC:
+# MAIN EFFECTS:
+# so what conditions are significant, given main effects? NOT NECESSARY IN CASE OF SIGN. INTERACTION!
+ShubNo_effect_posthoc_ME_time=emmeans(ShubNo_effect, list(pairwise ~ trialNo), adjust = "bonferroni") # pariwise comparisons between different trials
+# estimated marginal means - first table: shows how many Shubs were produced on average per trial; based on that we can make statements of "more" / "fewer" Shubs produced
+ShubNo_effect_posthoc_ME_group=emmeans(ShubNo_effect, list(pairwise ~ group), adjust = "bonferroni") # pariwise comparisons between different groups
+# estimated marginal means - first table: shows how many Shubs were produced on average per group; based on that we can make statements of "more" / "fewer" Shubs produced
+# get mean value for groups for reporting:
+ShubNo_effect_posthoc_ME_group_C_mean=mean(df_perf[df_perf$group=="C",]$shubNoNew)
+ShubNo_effect_posthoc_ME_group_C_sem=sd(df_perf[df_perf$group=="C",]$shubNoNew)/sqrt(length(df_perf[df_perf$group=="C",]$shubNoNew))
+ShubNo_effect_posthoc_ME_group_E_mean=mean(df_perf[df_perf$group=="E",]$shubNoNew)
+ShubNo_effect_posthoc_ME_group_E_sem=sd(df_perf[df_perf$group=="E",]$shubNoNew)/sqrt(length(df_perf[df_perf$group=="E",]$shubNoNew))
+
+# INTERACTION:
+ShubNo_effect_posthoc_INT_timeXgroup=emmeans(ShubNo_effect, list(pairwise ~ group | trialNo), adjust = "bonferroni")
+ShubNo_effect_posthoc_INT_timeXgroup_effsizes=eff_size(ShubNo_effect_posthoc_INT_timeXgroup$`emmeans of group | trialNo`, sigma = sigma(ShubNo_effect), edf = Inf)
+
+```
+
+#### Results
+
+The analysis revealed:
+
+* a significant interaction (group x trials): F(`r ShubNo_effect_anova$NumDF[3]`,`r ShubNo_effect_anova$DenDF[3]`)=`r ShubNo_effect_anova$Fvalue[3] `, p=`r ShubNo_effect_anova$Pvalue[3]`,$\eta_{\text{p}}^{2}$=`r ShubNo_effect_effsize$Eta2_partial[3]`
+
+Additionally:
+
+* there was a significant main effect of trialnumber (time): F(`r ShubNo_effect_anova$NumDF[1]`,`r ShubNo_effect_anova$DenDF[1]`)=`r ShubNo_effect_anova$Fvalue[1] `, p=`r ShubNo_effect_anova$Pvalue[1]`,$\eta_{\text{p}}^{2}$=`r ShubNo_effect_effsize$Eta2_partial[1]`
+
+* also, there was a significant main effect of group: F(`r ShubNo_effect_anova$NumDF[2]`,`r ShubNo_effect_anova$DenDF[2]`)=`r ShubNo_effect_anova$Fvalue[2] `, p=`r ShubNo_effect_anova$Pvalue[2]`,$\eta_{\text{p}}^{2}$=`r ShubNo_effect_effsize$Eta2_partial[2]` (mean ShubNo explanation group: `r ShubNo_effect_posthoc_ME_group_E_mean`, sem=`r ShubNo_effect_posthoc_ME_group_E_sem`; mean ShubNo control group: `r ShubNo_effect_posthoc_ME_group_C_mean`, sem=`r ShubNo_effect_posthoc_ME_group_C_sem`).
+
+Posthoc analysis revealed significant differences betweeen groups from trial 4 onwards 
+
+Coding with asterisk: *p < 0.05, **p < 0.01, and ***p < 0.001, respectively.
+
+trial 4:
+C - U: t(300)=-2.660, p=0.0494, Cohen's d=-1.065607; *
+
+trial 5:
+C - U: t(300)=-3.475, p=0.0035, Cohen's d=-1.392166; **
+
+trial 6:
+C - U: t(300)=-3.979, p=0.0005, Cohen's d=-1.593964; ***
+
+trial 7:
+C - U: t(300)=-4.867, p=<.0001, Cohen's d=-1.949977; ***
+U - D: t(300)=3.016, p=0.0167, Cohen's d=1.224062; *
+
+trial 8:
+C - U: t(300)=-5.689, p=<.0001, Cohen's d= -2.279037; ***
+C - M: t(300)=-2.891, p=0.0247, Cohen's d= -1.143930; *
+U - D: t(300)=4.025, p=0.0004, Cohen's d= 1.633399; ***
+U - M: t(300)=2.851, p=0.0280, Cohen's d= 1.135106; *
+
+trial 9:
+C - U: t(300)=-6.784, p= <.0001, Cohen's d=-2.279037; ***
+C - M: t(300)=-3.299, p=0.0065, Cohen's d=-1.143930; **
+U - D: t(300)=4.946, p=<.0001, Cohen's d=1.633399; ***
+U - M: t(300)=3.547, p=0.0027, Cohen's d=1.135106; **
+
+trial 10:
+C - U: t(300)=-8.029, p=<.0001, Cohen's d=-3.216757; ***
+C - M: t(300)=-4.030, p=0.0004, Cohen's d=-1.594644; ***
+U - D: t(300)=6.118, p=<.0001, Cohen's d=2.482857; ***
+U - M: t(300)=4.074, p=0.0004, Cohen's d=1.622113; ***
+
+trial 11:
+C - U: t(300)=-8.785, p=<.0001, Cohen's d=-3.519559; ***
+C - M: t(300)=-4.866, p=<.0001, Cohen's d=-1.925096; ***
+U - D: t(300)=7.013, p=<.0001, Cohen's d=2.845688; ***
+U - M: t(300)=4.004, p=0.0005, Cohen's d=1.594462; ***
+D - M: t(300)=-3.121, p=0.0119, Cohen's d=-1.251226; *
+
+trial 12:
+C - U: t(300)=-10.132, p=<.0001, Cohen's d=-4.058961; ***
+C - M: t(300)=-5.807, p=<.0001, Cohen's d=-2.297442; ***
+U - D: t(300)=7.996, p=<.0001, Cohen's d=3.244642; ***
+U - M: t(300)=4.424, p=0.0001, Cohen's d=1.761519; ***
+D - M: t(300)=-3.700, p=0.0015, Cohen's d=-1.483123; **
+
+```{r echo=FALSE, fig.align = "center"}
+
+#trial 4:
+#C - U: t(300)=-2.660, p=0.0494, Cohen's d=-1.065607; *
+#trial 5:
+#C - U: t(300)=-3.475, p=0.0035, Cohen's d=-1.392166; **
+#trial 6:
+#C - U: t(300)=-3.979, p=0.0005, Cohen's d=-1.593964; ***
+#trial 7:
+#C - U: t(300)=-4.867, p=<.0001, Cohen's d=-1.949977; ***
+#trial 8:
+#C - U: t(300)=-5.689, p=<.0001, Cohen's d= ; ***
+#trial 9:
+#C - U: t(300)=-6.784, p= <.0001, Cohen's d=-2.279037; ***
+#trial 10:
+#C - U: t(300)=-8.029, p=<.0001, Cohen's d=-3.216757; ***
+#trial 11:
+#C - U: t(300)=-8.785, p=<.0001, Cohen's d=-3.519559; ***
+#trial 12:
+#C - U: t(300)=-10.132, p=<.0001, Cohen's d=-4.058961; ***
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary_C_U_anno <- ggplot(df_ShubsPerTrial_summary %>% filter(group=="C" | group=="U"), aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ccol,Ucol), labels = c("control", "upward"))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol), labels = c("control", "upward"))+
+  scale_shape_manual(name = "Group", values=c(21,22), labels = c("control", "upward"))+
+  theme(legend.position="bottom")+
+  # annotations: trial 4
+  geom_segment(aes(x = 4, y = 9, xend = 4, yend = 13.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 4, y = 14.5, xend = 4, yend = 17.5),colour = "black", size=0.2) +
+  geom_text(x = 4,  y = 13.75, label = "*", colour = "black")+
+  # annotations: trial 5
+  geom_segment(aes(x = 5, y = 9, xend = 5, yend = 13.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 5, y = 14.5, xend = 5, yend = 20),colour = "black", size=0.2) +
+  geom_text(x = 5,  y = 13.75, label = "**", colour = "black")+
+  # annotations: trial 6
+  geom_segment(aes(x = 6, y = 9.5, xend = 6, yend = 13.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 6, y = 14.5, xend = 6, yend = 22),colour = "black", size=0.2) +
+  geom_text(x = 6,  y = 13.75, label = "***", colour = "black")+
+  # annotations: trial 7
+  geom_segment(aes(x = 7, y = 10.5, xend = 7, yend = 19.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 7, y = 20.5, xend = 7, yend = 27),colour = "black", size=0.2) +
+  geom_text(x = 7,  y = 20, label = "***", colour = "black")+
+  # annotations: trial 8
+  geom_segment(aes(x = 8, y = 12, xend = 8, yend = 19.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 8, y = 20.5, xend = 8, yend = 31),colour = "black", size=0.2) +
+  geom_text(x = 8,  y = 20, label = "***", colour = "black")+
+  # annotations: trial 9
+  geom_segment(aes(x = 9, y = 13, xend = 9, yend = 19.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 9, y = 20.5, xend = 9, yend = 38),colour = "black", size=0.2) +
+  geom_text(x = 9,  y = 20, label = "***", colour = "black")+
+  # annotations: trial 10
+  geom_segment(aes(x = 10, y = 14.5, xend = 10, yend = 29.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 10, y = 30.5, xend = 10, yend = 42),colour = "black", size=0.2) +
+  geom_text(x = 10,  y = 30, label = "***", colour = "black")+
+  # annotations: trial 11
+  geom_segment(aes(x = 11, y = 18, xend = 11, yend = 29.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 11, y = 30.5, xend = 11, yend = 48),colour = "black", size=0.2) +
+  geom_text(x = 11,  y = 30, label = "***", colour = "black")+
+  # annotations: trial 12
+  geom_segment(aes(x = 12, y = 19, xend = 12, yend = 29.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 12, y = 30.5, xend = 12, yend = 53),colour = "black", size=0.2) +
+  geom_text(x = 12,  y = 30, label = "***", colour = "black")
+
+#trial 7:
+#U - D: t(300)=3.016, p=0.0167, Cohen's d=1.224062; *
+#trial 8:
+#U - D: t(300)=4.025, p=0.0004, Cohen's d= ; ***
+#trial 9:
+#U - D: t(300)=4.946, p=<.0001, Cohen's d=1.633399; ***
+#trial 10:
+#U - D: t(300)=6.118, p=<.0001, Cohen's d=2.482857; ***
+#trial 11:
+#U - D: t(300)=7.013, p=<.0001, Cohen's d=2.845688; ***
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary_U_D_anno <- ggplot(df_ShubsPerTrial_summary %>% filter(group=="U" | group=="D"), aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ucol,Dcol), labels = c("upward", "downward"))+
+  scale_fill_manual("Group", values=c(Ucol,Dcol), labels = c("upward", "downward"))+
+  scale_shape_manual(name = "Group", values=c(22,24), labels = c("upward", "downward"))+
+  theme(legend.position="bottom")+
+  # annotations: trial 7
+  geom_segment(aes(x = 7, y = 18, xend = 7, yend = 21.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 7, y = 22.5, xend = 7, yend = 27),colour = "black", size=0.2) +
+  geom_text(x = 7,  y = 22, label = "*", colour = "black")+
+  # annotations: trial 8
+  geom_segment(aes(x = 8, y = 19, xend = 8, yend = 22.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 8, y = 23.5, xend = 8, yend = 31),colour = "black", size=0.2) +
+  geom_text(x = 8,  y = 23, label = "***", colour = "black")+
+  # annotations: trial 9
+  geom_segment(aes(x = 9, y = 21, xend = 9, yend = 28.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 9, y = 29.5, xend = 9, yend = 37),colour = "black", size=0.2) +
+  geom_text(x = 9,  y = 29, label = "***", colour = "black")+
+  # annotations: trial 10
+  geom_segment(aes(x = 10, y = 23, xend = 10, yend = 28.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 10, y = 29.5, xend = 10, yend = 43),colour = "black", size=0.2) +
+  geom_text(x = 10,  y = 29, label = "***", colour = "black")+
+  # annotations: trial 11
+  geom_segment(aes(x = 11, y = 25, xend = 11, yend = 34.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 11, y = 35.5, xend = 11, yend = 48),colour = "black", size=0.2) +
+  geom_text(x = 11,  y = 35, label = "***", colour = "black")+
+  # annotations: trial 12
+  geom_segment(aes(x = 12, y = 27, xend = 12, yend = 34.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 12, y = 35.5, xend = 12, yend = 54),colour = "black", size=0.2) +
+  geom_text(x = 12,  y = 35, label = "***", colour = "black")
+
+#trial 8:
+#C - M: t(300)=-2.891, p=0.0247, Cohen's d= -1.143930; *
+#trial 9:
+#C - M: t(300)=-3.299, p=0.0065, Cohen's d=-1.143930; **
+#trial 10:
+#C - M: t(300)=-4.030, p=0.0004, Cohen's d=-1.594644; ***
+#trial 11:
+#C - M: t(300)=-4.866, p=<.0001, Cohen's d=-1.925096; ***
+#trial 12:
+#C - M: t(300)=-5.807, p=<.0001, Cohen's d=-2.297442; ***
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary_C_M_anno <- ggplot(df_ShubsPerTrial_summary %>% filter(group=="C" | group=="M"), aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ccol,Mcol), labels = c("control", "mixed"))+
+  scale_fill_manual("Group", values=c(Ccol,Mcol), labels = c("control", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(21,25), labels = c("control", "mixed"))+
+  theme(legend.position="bottom")+
+  # annotations: trial 8
+  geom_segment(aes(x = 8, y = 12, xend = 8, yend = 14.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 8, y = 15.5, xend = 8, yend = 21),colour = "black", size=0.2) +
+  geom_text(x = 8,  y = 15, label = "*", colour = "black")+
+  # annotations: trial 9
+  geom_segment(aes(x = 9, y = 14, xend = 9, yend = 17.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 9, y = 18.5, xend = 9, yend = 25),colour = "black", size=0.2) +
+  geom_text(x = 9,  y = 18, label = "**", colour = "black")+
+  # annotations: trial 10
+  geom_segment(aes(x = 10, y = 16, xend = 10, yend = 20.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 10, y = 21.5, xend = 10, yend = 28),colour = "black", size=0.2) +
+  geom_text(x = 10,  y = 21, label = "***", colour = "black")+
+  # annotations: trial 11
+  geom_segment(aes(x = 11, y = 18, xend = 11, yend = 23.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 11, y = 24.5, xend = 11, yend = 33),colour = "black", size=0.2) +
+  geom_text(x = 11,  y = 24, label = "***", colour = "black")+
+  # annotations: trial 12
+  geom_segment(aes(x = 12, y = 19, xend = 12, yend = 26.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 12, y = 27.5, xend = 12, yend = 38),colour = "black", size=0.2) +
+  geom_text(x = 12,  y = 27, label = "***", colour = "black")
+
+#trial 8:
+#U - M: t(300)=2.851, p=0.0280, Cohen's d= ; *
+#trial 9:
+#U - M: t(300)=3.547, p=0.0027, Cohen's d=1.135106; **
+#trial 10:
+#U - M: t(300)=4.074, p=0.0004, Cohen's d=1.622113; ***
+#trial 11:
+#U - M: t(300)=4.004, p=0.0005, Cohen's d=1.594462; ***
+#trial 12:
+#U - M: t(300)=4.424, p=0.0001, Cohen's d=1.761519; ***
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary_U_M_anno <- ggplot(df_ShubsPerTrial_summary %>% filter(group=="U" | group=="M"), aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Ucol,Mcol), labels = c("upward", "mixed"))+
+  scale_fill_manual("Group", values=c(Ucol,Mcol), labels = c("upward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(22,25), labels = c("upward", "mixed"))+
+  theme(legend.position="bottom")+
+  # annotations: trial 8
+  geom_segment(aes(x = 8, y = 23, xend = 8, yend = 25.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 8, y = 26.5, xend = 8, yend = 31),colour = "black", size=0.2) +
+  geom_text(x = 8,  y = 26, label = "*", colour = "black")+
+  # annotations: trial 9
+  geom_segment(aes(x = 9, y = 26, xend = 9, yend = 30.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 9, y = 31.5, xend = 9, yend = 37),colour = "black", size=0.2) +
+  geom_text(x = 9,  y = 31, label = "**", colour = "black")+
+  # annotations: trial 10
+  geom_segment(aes(x = 10, y = 31, xend = 10, yend = 35.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 10, y = 36.5, xend = 10, yend = 43),colour = "black", size=0.2) +
+  geom_text(x = 10,  y = 36, label = "***", colour = "black")+
+  # annotations: trial 11
+  geom_segment(aes(x = 11, y = 35, xend = 11, yend = 40.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 11, y = 41.5, xend = 11, yend = 48),colour = "black", size=0.2) +
+  geom_text(x = 11,  y = 41, label = "***", colour = "black")+
+  # annotations: trial 12
+  geom_segment(aes(x = 12, y = 40, xend = 12, yend = 46.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 12, y = 47.5, xend = 12, yend = 54),colour = "black", size=0.2) +
+  geom_text(x = 12,  y = 47, label = "***", colour = "black")
+
+#trial 11:
+#D - M: t(300)=-3.121, p=0.0119, Cohen's d=-1.251226; *
+#trial 12:
+#D - M: t(300)=-3.700, p=0.0015, Cohen's d=-1.483123; **
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary_D_M_anno <- ggplot(df_ShubsPerTrial_summary %>% filter(group=="D" | group=="M"), aes(x=factor(trialNo), y=mean, group = group, color= group, shape = group, fill = group))+
+  geom_line(size=1)+
+  geom_point(size=3,colour="black")+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.3)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="",x="", y = "")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(limits = c(0, 65))+
+  scale_x_discrete(breaks=1:numTrials)+
+  scale_colour_manual("Group", values=c(Dcol,Mcol), labels = c("downward", "mixed"))+
+  scale_fill_manual("Group", values=c(Dcol,Mcol), labels = c("downward", "mixed"))+
+  scale_shape_manual(name = "Group", values=c(24,25), labels = c("downward", "mixed"))+
+  theme(legend.position="bottom")+
+  # annotations: trial 11
+  geom_segment(aes(x = 11, y = 24.5, xend = 11, yend = 27.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 11, y = 28.5, xend = 11, yend = 33.5),colour = "black", size=0.2) +
+  geom_text(x = 11,  y = 28, label = "*", colour = "black")+
+  # annotations: trial 12
+  geom_segment(aes(x = 12, y = 27, xend = 12, yend = 31.5),colour = "black", size=0.2) +
+  geom_segment(aes(x = 12, y = 32.5, xend = 12, yend = 38),colour = "black", size=0.2) +
+  geom_text(x = 12,  y = 32, label = "**", colour = "black")
+
+# put all plots together
+H1.1_p_ShubsPerTrial_summary_anno <- ggarrange(H1.1_p_ShubsPerTrial_summary, H1.1_p_ShubsPerTrial_summary_C_U_anno,
+                                               H1.1_p_ShubsPerTrial_summary_U_D_anno, H1.1_p_ShubsPerTrial_summary_U_M_anno, 
+                                               H1.1_p_ShubsPerTrial_summary_C_M_anno, H1.1_p_ShubsPerTrial_summary_D_M_anno,
+                                               ncol = 2, nrow = 3, common.legend = TRUE, labels = c("(A)", "(B)", "(C)", "(D)", "(E)", "(F)"))
+
+# add labels
+H1.1_p_ShubsPerTrial_summary_anno=annotate_figure(H1.1_p_ShubsPerTrial_summary_anno,
+                left = text_grob("Mean number of generated aliens", rot = 90),
+                bottom = text_grob("Trial number"),
+)
+
+# save
+ggsave("Figures/H1.1_p_ShubsPerTrial_summary_anno.pdf",width = 12, height = 15)
+ggsave("Figures/H1.1_p_ShubsPerTrial_summary_anno.eps",width = 18, height = 24, units = "cm",device = cairo_ps)
+
+# show
+print("Display figure showing development of pack size over trials / blocks:")
+H1.1_p_ShubsPerTrial_summary_anno
+
+```
+
+## Consideration 2: Do users differ in terms of their explicit knowledge regarding feature relevance?
+
+We need to start with preprocessing: Clean the survey dataset (issues could arise from improper logging + survey straightliners).
+
+```{r echo=FALSE, fig.height = 5, fig.width = 4, fig.align = "center"}
+
+# how many survey items did we have?
+numSurveyItems=max(df_survey$itemNo)
+
+# check: which users checked how many questions? 
+df_survey_checkedItemsPerUser=aggregate(checked ~ userId, data = df_survey, FUN = function(x){sum(x==1)})
+
+# how many users do not have survey data at all (compared to users in performance data)?
+survey_missingData=length(unique(df_perf$userId))-length(unique(df_survey$userId))
+
+# FOR SURVEY: EVALUATE ODD USERS (i.e., incomplete logging)
+#collect "odd" userIDs:
+odd_userIDs=unique(c(df_survey_checkedItemsPerUser$userId[df_survey_checkedItemsPerUser$checked<numSurveyItems]))
+survey_missingData=survey_missingData+length(odd_userIDs)
+
+## remove users with partial responses only: 
+df_survey=df_survey[!df_survey$userId %in% odd_userIDs,]
+
+## quality check: remove survey straightliners (responding with positive or negative valence only:)
+
+# set to data table
+dt_survey=setDT(df_survey,key=c("userId"))
+# get checked values for items 3,4,5,6,8,9 (7 is red hering)
+straightlineSurvey_data=dt_survey[ checked == 1 & itemNo > 2 & !itemNo==7] 
+
+straightlineSurvey_data$valence=ifelse(straightlineSurvey_data$responseNo>3,"pos","neg")
+straightlineSurvey_data$valence[straightlineSurvey_data$responseNo==3 | straightlineSurvey_data$responseNo==6]="neut"
+
+# identify users that answered only using positive / negative / neutral valence
+straightlinersSurvey_IDs=straightlineSurvey_data[,list(mismatchValenceSurveyItems=length(unique(valence))>1),keyby=.(userId)]
+# keep only users without "mismatchSurveyItems" (no mismatch = uniform answers)
+straightlinersSurvey_IDs=straightlinersSurvey_IDs[!straightlinersSurvey_IDs$mismatchValenceSurveyItems]
+straightlinersSurvey_IDs=as.character(straightlinersSurvey_IDs$userId)
+
+# look at survey responses of survey-straightliners:
+# df_survey[df_survey$userId %in% straightlinersSurvey_IDs & checked==1,]
+
+# remove survey straightliners
+df_survey=subset(df_survey, ! userId %in% straightlinersSurvey_IDs)
+
+# finally, how many participants remain for survey analysis?
+length(unique(df_survey$userId))
+
+```
+
+On to the actual analysis: Survey items 1 and 2 explicitly ask users to state which plants they thought were relevant.
+So what did users tick?
+
+```{r echo=FALSE, fig.height = 5, fig.width = 4, fig.align = "center"}
+
+# ADAPT depending on data used: Vector specifying which features are relevant
+# [LAST ENTRY ALWAYS 0, to account for 'don't know' response option in survey]
+# We know the ground truth: plants 2 and 4 were relevant:
+# there was a linear relationship between plant 2 and the growth rate, iff
+#  + plant 4 has a value of 1 or 2
+
+relevantPlants_truth=c(2,4)
+irrelevantPlants_truth=c(1,3,5)
+
+# Descriptive stats
+# subset to get only relevant data
+df_survey_relevantPlants=df_survey[(df_survey$itemNo==1 | df_survey$itemNo==2),]
+# set itemNo and responseNo to factors, too
+df_survey_relevantPlants$itemNo=as.factor(df_survey_relevantPlants$itemNo)
+df_survey_relevantPlants$responseNo=as.factor(df_survey_relevantPlants$responseNo)
+
+summary(df_survey_relevantPlants)
+
+# summarize to get overview values of frequencies and percentages
+df_survey_relevantPlants_summary=dplyr::summarise(group_by(df_survey_relevantPlants, group, itemNo, responseNo),
+          SumChecks=sum(checked),
+          PercUsersChecked=100*(sum(checked)/length(unique(userId))))
+
+# rectangle data for figure annotation
+rect_df_freq<-data.frame(xmin = c(1.5, 3.5, 4.5, 0.5, 2.5), xmax = c(2.5, 4.5, 5.5, 1.5, 3.5), 
+                 ymin = c(0, 0, 0, 0, 0), ymax = c(35, 35, 35, 35, 35), 
+                 itemNo = as.character(c(1,1,2,2,2)))
+
+# rectangle data for figure annotation
+rect_df_perc<-data.frame(xmin = c(1.5, 3.5, 4.5, 0.5, 2.5), xmax = c(2.5, 4.5, 5.5, 1.5, 3.5), 
+                 ymin = c(0, 0, 0, 0, 0), ymax = c(101, 101, 101, 101, 101), 
+                 itemNo = as.character(c(1,1,2,2,2)))
+
+# display frequency as raw counts
+H1.3_p_FreqUserResponses = ggplot(data=df_survey_relevantPlants_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = SumChecks),stat="identity",position = position_dodge(preserve = "single"))+
+  facet_wrap(vars(itemNo),nrow = 2, ncol = 1,labeller=as_labeller(c(`1`="What plants are relevant?",`2`="What plants are not relevant?")))+
+  labs(title="Judged relevance of plants (freq. counts)",x="Plant number", y = "Frequency of answer")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:6, labels=c("1","2","3","4","5","don't know"))+
+  scale_y_continuous(limits = c(0,40))+
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+  alpha = 0.2,colour ="red",data = rect_df_freq,inherit.aes = FALSE)+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# display frequency as percentage of all per group users (how many % of explanation users picked plant 1?)
+H1.3_p_PercUserResponses = ggplot(data=df_survey_relevantPlants_summary, aes(x=responseNo,fill = group)) + 
+  geom_bar(aes(y = PercUsersChecked),stat="identity",position = position_dodge(preserve = "single"))+
+  facet_wrap(vars(itemNo),nrow = 2, ncol = 1,labeller=as_labeller(c(`1`="What plants are relevant?",`2`="What plants are not relevant?")))+
+  labs(title="Judged relevance of plants (% of users)",x="Plant number", y = "% of users per group")+
+  theme_bw(base_size = 10)+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  scale_x_discrete(breaks=1:6, labels=c("1","2","3","4","5","don't know"))+
+  scale_y_continuous(limits = c(0,101))+
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+  alpha = 0.2,colour ="red",data = rect_df_perc,inherit.aes = FALSE)+
+  theme(plot.title = element_text(hjust = 0.5),legend.title = element_blank())
+
+# put all plots together
+H1.3_figure1_UserResponses <- ggarrange(H1.3_p_FreqUserResponses,H1.3_p_PercUserResponses,
+                    ncol = 1, nrow = 2, heights=c(4,4), common.legend = TRUE)
+
+# save
+ggsave("Figures/H1.3_figure1_UserResponses.pdf",width = 5, height = 6,)
+
+# show
+print("Display figures showing user responses in relevant survey items:")
+H1.3_figure1_UserResponses
+
+```
+
+How to evaluate this statistically? Let's just count the matches between 'judged as relevant' / 'judged as irrelevant' user vectors and the true 'relevant' / 'irrelevant' factors.
+
+```{r echo=FALSE, fig.height = 5, fig.width = 5, fig.align = "center"}
+
+# define vectors with ground truth
+relevantPlants_truth_vec=c(0,0,0,0,0)
+relevantPlants_truth_vec[relevantPlants_truth]=1
+
+# invert relevantPlants_truth_vec to get irrelevant vector
+irrelevantPlants_truth_vec=as.numeric(!relevantPlants_truth_vec)
+
+# go from long to wide format:
+df_survey_relevantPlants_wide = spread(df_survey_relevantPlants[df_survey_relevantPlants$itemNo==1,],responseNo,checked)
+df_survey_irrelevantPlants_wide = spread(df_survey_relevantPlants[df_survey_relevantPlants$itemNo==2,],responseNo,checked)
+
+# Take out those people who indicated "do not know"
+df_survey_relevantPlants_wide=df_survey_relevantPlants_wide[!df_survey_relevantPlants_wide$`6`==1]
+df_survey_irrelevantPlants_wide=df_survey_irrelevantPlants_wide[!df_survey_irrelevantPlants_wide$`6`==1]
+
+# define function to compute sum of matches between input and truth
+getMatches <- function(x, truth, output) {
+ return(sum(c(x[4],x[5],x[6],x[7],x[8])==truth))
+}
+
+## compute matches between participant input and truth
+matchesRel=apply(df_survey_relevantPlants_wide,1,getMatches,truth=relevantPlants_truth_vec)
+matchesIrrel=apply(df_survey_irrelevantPlants_wide,1,getMatches,truth=irrelevantPlants_truth_vec)
+df_survey_relevantPlants_wide=cbind(df_survey_relevantPlants_wide,matches = matchesRel)
+df_survey_irrelevantPlants_wide=cbind(df_survey_irrelevantPlants_wide,matches = matchesIrrel)
+
+# plot mean number of matches between groups
+# function to compute summary stats (mean, sd, sem)
+data_summary <- function(data, varname, groupnames){
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      sem = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum$itemNo=unique(data$itemNo)
+  return(data_sum)
+}
+
+## The comprehensive approach: compare summed matches (i.e., taking relevant and irrelevant plants together)
+df_survey_explicitKnowledgeMatches=merge(df_survey_relevantPlants_wide, df_survey_irrelevantPlants_wide, by=c("userId","group"))
+## Sum matches to get the full picture:
+df_survey_explicitKnowledgeMatches$matchesSum=df_survey_explicitKnowledgeMatches$matches.x+df_survey_explicitKnowledgeMatches$matches.y
+
+## make summary stats for plotting:
+df_survey_explicitKnowledgeMatches_summary=data_summary(df_survey_explicitKnowledgeMatches, varname="matchesSum",groupnames=c("group"))
+
+# plot means and sems
+H1.3_figure2_explicitKnowledgeMatches = ggplot(df_survey_explicitKnowledgeMatches_summary, aes(x=group, y=mean, fill=group)) + 
+  geom_bar(stat="identity", color="black", 
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean-sem, ymax=mean+sem), width=.2,
+                 position=position_dodge(.9))+
+  labs(title="Mean no. of matches (judgements vs. truth)",x="Group", y = "Mean number of matches")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(expand = c(0,0),limits = c(0,10.5),breaks=c(1:10))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  geom_hline(aes(yintercept=10, linetype="Max. no.\nof possible\nmatches"), color = "black", size=0.5)+
+  scale_linetype_manual(name = "", values = c(5, 3), 
+                      guide = guide_legend(override.aes = list(color = c("black"))))+
+  theme(plot.title = element_text(hjust = 0.5),legend.position = "bottom",legend.box="vertical")
+
+## compute statistics between matches of irrelevant plants:
+matchesFullt="KruskalWallis"
+matchesFulltest=as_tibble(df_survey_explicitKnowledgeMatches) %>% kruskal_test(matchesSum ~ group)
+matchesFulleffsize=as_tibble(df_survey_explicitKnowledgeMatches) %>% kruskal_effsize(matchesSum ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","ExplicitKnowledgeFeatureRelevance",sep=""),matchesFullt,matchesFulltest$p,matchesFulltest$statistic,matchesFulleffsize$effsize,sep = ",")
+
+matchesFull_followUp=pairwise.wilcox.test(df_survey_explicitKnowledgeMatches$matchesSum, as.numeric(df_survey_explicitKnowledgeMatches$group),p.adjust.method = "bonferroni")
+
+# add statistical infos
+H1.3_figure2_explicitKnowledgeMatches_anno = ggplot(df_survey_explicitKnowledgeMatches_summary, aes(x=group, y=mean, fill=group)) + 
+  geom_bar(stat="identity",
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean-sem, ymax=mean+sem), width=.2,
+                 position=position_dodge(.9))+
+  labs(title="Mean no. of matches (judgements vs. truth)",x="Group", y = "Mean number of matches")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(expand = c(0,0),limits = c(0,10.5),breaks=c(1:10))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  geom_hline(aes(yintercept=10, linetype="Max. no.\nof possible\nmatches"), color = "black", size=0.5)+
+  scale_linetype_manual(name = "", values = c(5, 3), 
+                      guide = guide_legend(override.aes = list(color = c("black"))))+
+  theme(plot.title = element_blank(),axis.title.x = element_blank())+
+  geom_segment(aes(x = 2, y = 7, xend = 2, yend = 8),colour = "black", size=0.2) +
+  geom_segment(aes(x = 3, y = 5.8, xend = 3, yend = 8),colour = "black", size=0.2) +
+  geom_segment(aes(x = 2, y = 8, xend = 3, yend = 8),colour = "black", size=0.2) +
+  geom_text(x = 2.5,  y = 8.5, label = "*", colour = "black")
+
+  # save
+  ggsave("Figures/H1.3_figure2_explicitKnowledgeMatches_anno.pdf",width = 5, height = 6)
+  ggsave("Figures/H1.3_figure2_explicitKnowledgeMatches_anno.eps",width = 14, height = 6, units = "cm",device = cairo_ps)
+
+```
+
+The analysis revealed:
+
+* Is there a significant difference in terms of matches between plants judged as relevant and ground truth?: We compared number of matches for users in all conditions:
+upward (M = `r df_survey_explicitKnowledgeMatches_summary$mean[df_survey_explicitKnowledgeMatches_summary$group=="U"]`, SEM = `r df_survey_explicitKnowledgeMatches_summary$sem[df_survey_explicitKnowledgeMatches_summary$group=="U"]`),
+downward (M = `r df_survey_explicitKnowledgeMatches_summary$mean[df_survey_explicitKnowledgeMatches_summary$group=="D"]`, SEM = `r df_survey_explicitKnowledgeMatches_summary$sem[df_survey_explicitKnowledgeMatches_summary$group=="D"]`),
+mixed (M = `r df_survey_explicitKnowledgeMatches_summary$mean[df_survey_explicitKnowledgeMatches_summary$group=="M"]`, SEM = `r df_survey_explicitKnowledgeMatches_summary$sem[df_survey_explicitKnowledgeMatches_summary$group=="M"]`), and 
+control (M = `r df_survey_explicitKnowledgeMatches_summary$mean[df_survey_explicitKnowledgeMatches_summary$group=="C"]`, SEM = `r df_survey_explicitKnowledgeMatches_summary$sem[df_survey_explicitKnowledgeMatches_summary$group=="C"]`).
+Statistical comparison was done using a `r matchesFullt` test. This showed: 
+
+  + for KruskalWallis test: H=`r matchesFulltest$statistic `, p=`r matchesFulltest$p `, r = `r matchesFulleffsize$effsize`
+  + So yes! People receiving upward explanations could better identify relevant features than people in the downward condition.
+  + Note: a large proportion on the control group replied with "I don't know", also indicating the troubles these participants had.
+
+## Consideration 3: User differences in terms of subjective understanding
+
+How do groups differ in terms of their SCS [@holzinger_measuring_2020]?
+
+```{r echo=FALSE, fig.height = 7, fig.width = 7, fig.align = "center"}
+
+# keep only checked items beyond items 1, 2, and 7
+# also exclude "Prefer not to answer" responses:
+df_survey_SCS=df_survey[df_survey$checked==1 & !df_survey$itemNo %in% c(1,2,7) & !df_survey$responseNo %in% c(6) ]
+
+# RECAP THE ITEMS:
+#"3. I understood the feedback on what choice would have led to a different result."
+#"4. I needed support to understand the overview of my past choices." -- INVERT! 1 --> 5 and vice versa
+#"5. I found that the feedback on what choice would have led to a different result helped me to increase the number of Shubs."
+#"6. I was able to use the feedback on what choice would have led to a different result to increase the number of Shubs."
+#"8. I found inconsistencies in the feedback on what choice would have led to a different result." -- INVERT! 1 --> 5 and vice versa
+#"9. I think most people would learn to work with the feedback on what choice would have led to a different result very quickly."
+#"10. I received the overview of my past choices in a timely and efficient manner."
+# --> max score = 5*7 = 35
+
+# take response number as value:
+df_survey_SCS$SCSscore=df_survey_SCS$responseNo
+
+# invert responses for items 4 and 8
+df_survey_SCS$SCSscore[df_survey_SCS$itemNo==4]=max(df_survey_SCS$SCSscore[df_survey_SCS$itemNo==4]) + 1 - df_survey_SCS$SCSscore[df_survey_SCS$itemNo==4]
+df_survey_SCS$SCSscore[df_survey_SCS$itemNo==8]=max(df_survey_SCS$SCSscore[df_survey_SCS$itemNo==8]) + 1 - df_survey_SCS$SCSscore[df_survey_SCS$itemNo==8]
+
+df_survey_SCS_aggregate=aggregate(SCSscore ~ userId + group, data = df_survey_SCS, FUN = function(x){sum(x)/35})
+
+# function to compute summary stats (mean, sd, sem)
+data_summary <- function(data, varname, groupnames){
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      sem = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum$itemNo=unique(data$itemNo)
+  return(data_sum)
+}
+
+# compute summary stats (mean, sd, sem)
+df_survey_SCS_aggregate_summary=data_summary(df_survey_SCS_aggregate, varname="SCSscore", 
+                    groupnames=c("group"))
+
+# plot means and sems
+SCSscores_figure = ggplot(df_survey_SCS_aggregate_summary, aes(x=group, y=mean, fill=group)) + 
+  geom_bar(stat="identity",
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean-sem, ymax=mean+sem), width=.2,
+                 position=position_dodge(.9))+
+  #facet_wrap(vars(itemNo),nrow = 2, ncol = 1,labeller=as_labeller(c(`1`="Which plants are relevant?",`2`="Which plants are not relevant?")))+
+  labs(title="Adapted SCS score",x="Group", y = "Mean adapted SCS score")+
+  theme_bw(base_size = 10)+
+  scale_y_continuous(expand = c(0,0),limits = c(0,1))+
+  scale_fill_manual("Group", values=c(Ccol,Ucol,Dcol,Mcol), labels = c("control", "upward", "downward", "mixed"))+
+  #geom_hline(aes(yintercept=5, linetype="Max. no.\nof possible\nmatches"), color = "black", size=0.5)+
+  scale_linetype_manual(name = "", values = c(5, 3), 
+                      guide = guide_legend(override.aes = list(color = c("black"))))+
+  #theme(plot.title = element_text(hjust = 0.5),legend.position = "bottom",legend.box="vertical")+
+  #theme(plot.title = element_blank(),axis.ticks.x = element_blank(),axis.text.x = element_blank(),axis.title.x = element_blank())+
+  theme(plot.title = element_blank(),axis.title.x = element_blank())
+
+# save
+ggsave("Figures/SCSscores_figure.pdf",width = 5, height = 6,)
+ggsave("Figures/SCSscores_figure.eps",width = 14, height = 6, units = "cm",device = cairo_ps)
+
+SCSt="KruskalWallis"
+SCStest=df_survey_SCS_aggregate %>% kruskal_test(SCSscore ~ group)
+SCSeffsize=df_survey_SCS_aggregate %>% kruskal_effsize(SCSscore ~ group)
+
+matchingRes=paste(matchingRes,paste("\n","SCS",sep=""),SCSt,SCStest$p,SCStest$statistic,SCSeffsize$effsize,sep = ",")
+
+# FOR PUBLICATION: arrange behavioral figures:
+explicitKnowl_SCSscores_combined <- ggarrange("","",H1.3_figure2_explicitKnowledgeMatches_anno,SCSscores_figure,ncol = 2, nrow = 2, common.legend = TRUE, heights=c(0.5,9.5), labels = c("","","(A)", "(B)"),vjust = -0.5)
+
+ggsave("Figures/explicitKnowl_SCSscores_combined.pdf",width = 5, height = 6,)
+ggsave("Figures/explicitKnowl_SCSscores_combined.eps",width = 20, height = 8.5, units = "cm",device = cairo_ps)
+
+```
+
+The analysis revealed:
+
+* Is there a significant difference in terms of SCS between groups?
+
+We compared number of matches for users in all conditions:
+upward (M = `r df_survey_SCS_aggregate_summary$mean[df_survey_SCS_aggregate_summary$group=="U"]`, SEM = `r df_survey_SCS_aggregate_summary$sem[df_survey_SCS_aggregate_summary$group=="U"]`),
+downward (M = `r df_survey_SCS_aggregate_summary$mean[df_survey_SCS_aggregate_summary$group=="D"]`, SEM = `r df_survey_SCS_aggregate_summary$sem[df_survey_SCS_aggregate_summary$group=="D"]`),
+mixed (M = `r df_survey_SCS_aggregate_summary$mean[df_survey_SCS_aggregate_summary$group=="M"]`, SEM = `r df_survey_SCS_aggregate_summary$sem[df_survey_SCS_aggregate_summary$group=="M"]`), and 
+control (M = `r df_survey_SCS_aggregate_summary$mean[df_survey_SCS_aggregate_summary$group=="C"]`, SEM = `r df_survey_SCS_aggregate_summary$sem[df_survey_SCS_aggregate_summary$group=="C"]`).
+Statistical comparison was done using a `r SCSt` test. This showed: 
+
+  + for KruskalWallis test: H=`r SCStest$statistic `, p=`r SCStest$p `, r = `r SCSeffsize$effsize `
+  + So no: Our participants did not vary in terms of subjective experience.
+  + Note: a large proportion on the control group replied with "I don't know", also indicating the troubles these participants had.
+
+# Wrapping up
+
+```{r echo=FALSE}
+# Wrapping up: write statistics of bivariate comparisons etc.
+
+# delete file if already there:
+#Check its existence
+if (file.exists(paste("BivariateStats.csv",sep=""))) {
+  #Delete file if it exists
+  file.remove(paste("BivariateStats.csv",sep=""))
+}
+
+tmpFile=file(paste("BivariateStats.csv",sep=""), "w+")
+writeLines(matchingRes,tmpFile)
+close(tmpFile)
+
+```
+
+# References

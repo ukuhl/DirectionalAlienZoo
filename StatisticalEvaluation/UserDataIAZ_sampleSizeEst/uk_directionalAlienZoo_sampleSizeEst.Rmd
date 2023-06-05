@@ -1,0 +1,492 @@
+---
+title: "Directional Alien Zoo: Esimation of sample size (April 2023)"
+output: 
+  pdf_document:
+    toc: TRUE
+    toc_depth: 5
+bibliography: ../PlausibleAlienZoo.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r results='asis', echo=FALSE, include=FALSE,}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+
+library(rstudioapi)
+library(ggplot2)
+library(ggrepel)
+library(plyr)
+library(dplyr)
+library(unikn)
+library(ggpubr)
+library(data.table)
+library(tidyverse)
+library(scales)
+library(effsize)
+
+# for the lme approach:
+library("emmeans")
+library("sjstats")
+library("lme4")
+library("lmerTest")
+library("MuMIn")
+
+# turn off scientific notation for exact values
+options(scipen = 999)
+
+# Barrier-free color palette
+# Source: Okabe & Ito (2008): Color Universal Design (CUD):
+#         Fig. 16 of <https://jfly.uni-koeln.de/color/>:
+
+# (a) Vector of colors (as RGB values):
+Okabe_Ito_palette <- c(rgb(  0,   0,   0, maxColorValue = 255),  # black
+                rgb(230, 159,   0, maxColorValue = 255),  # orange
+                rgb( 86, 180, 233, maxColorValue = 255),  # skyblue
+                rgb(  0, 158, 115, maxColorValue = 255),  # green
+                rgb(240, 228,  66, maxColorValue = 255),  # yellow
+                rgb(  0, 114, 178, maxColorValue = 255),  # blue
+                rgb(213,  94,   0, maxColorValue = 255),  # vermillion
+                rgb(204, 121, 167, maxColorValue = 255)   # purple
+)
+
+# (b) Vector of color names:
+o_i_names <- c("black", "orange", "skyblue", "green", "yellow", "blue", "vermillion", "purple")
+
+# (c) Use newpal() to combine colors and names:
+pal_okabe_ito <- newpal(col = Okabe_Ito_palette,
+                        names = o_i_names)
+
+Ccol=Okabe_Ito_palette[3]
+Pcol=Okabe_Ito_palette[4]
+
+# palette for likert scale data, inspired by yellow and vermillion values from Okabe_Ito
+likert_Okabe_Ito_palette <- c(rgb(213,  94,   0, maxColorValue = 255),  # vermillion (strongly disagree)
+                rgb(234, 175, 128, maxColorValue = 255),  # middle yellow red (disagree)
+                rgb(255, 255, 255, maxColorValue = 255),  # white (neutral)
+                rgb(249, 245, 179, maxColorValue = 255),  # medium champagne (agree)
+                rgb(240, 228,  66, maxColorValue = 255)   # yellow (strongly agree)
+)
+
+# set an empty string to save all information
+matchingRes=""
+matchingRes="Comparison,ShapiroPval,TestUsed,TestPval,TestEffSize"
+
+# Set working directory to source file location
+sourceLoc=here::set_here()
+setwd(dirname(sourceLoc))
+
+# source adapted wilcoxon test (easy computation of effect size)
+source("../uk_wilcox.test.R")
+
+```
+
+\newpage
+
+# Introduction
+
+This is an a priori computation of required sample size for the directional Alien Zoo study run on Prolific in April 2023. In this study, naive users were asked to interact with the Alien Zoo paradigm to understand relationships in an unknown dataset, what has been termed “learning to discover” by [@adadi_peeking_2018]. In regular intervals, participants receive counterfactual explanations (CFEs) regarding past choices. These are either "upward" CFEs (what would have been better?), "downward" CFEs (what would have been worde?), "mixed" (both better and worse), and no explanation as control.
+
+Prior to the data acquisition for the directional zoo, we performed an a-priori power analysis to evaluate the required sample size.
+To run this estimation, we used data from an earlier alien zoo study, comparing "upward" CFEs with a no explanation control (HERE HERE: INSERT REF!), on explanations produced by the same model, trained on the same underlying data. We deemed this appropriate as we expect a similar performance distribution for the "upwards" and "control" groups also in the upcoming work. 
+
+We will focus on how many users are necessary for the linear mixed effects model analysis of ShubNo and Time (H1.1 and H1.2).
+
+## Hypotheses
+
+The main RQ is the following:
+
+*H1) Which CFE is most helpful to users tasked to discover unknown relationships in data. We will evaluate both objective as well as subjective understandability.*
+
+That means, we expect users in different conditions to differ in terms of
+
+* H1.1) performance over time (i.e., number of Shubs generated), *AND*
+
+* H1.2) reaction time (some will become quicker in the final blocks, because choosing the right plants will become more automatic).
+
+## Descriptive stats
+
+Let's first just look at the data we have.
+
+```{r echo=FALSE, warning=FALSE}
+
+# Set working directory to source file location
+sourceLoc=here::set_here()
+setwd(dirname(sourceLoc))
+
+# load data from previous study, as basis for power analysis
+load("IAZ_Exp2_df_perf.Rda")
+load("IAZ_Exp2_df_rt.Rda")
+
+```
+
+How many users do we have in our performance df? `r length(unique(df_perf$userId))`
+
+```{r echo=FALSE, warning=FALSE}
+
+# sort according to ID and trial:
+df_perf=df_perf[order(df_perf$userId, df_perf$trialNo),]
+df_rt=df_rt[order(df_rt$userId, df_rt$TrialNr),]
+
+# make factors 
+df_rt$userId <- as.factor(df_rt$userId)
+df_rt$group <- as.factor(df_rt$group)
+
+# the data we have is data based on 2 groups
+# however, we will work with four groups in the new assessment
+# consequently, we will simulate two additional groups, based on the data we have right now
+
+df_perf_sim=df_perf
+library(stringi)
+stri_rand_strings(length(unique(df_perf$userId)), 5, pattern = "[A-Za-z0-9]")
+groups_sim=df_perf$group
+
+# simulate IDs
+df_perf_sim$userId=rep(stri_rand_strings(length(unique(df_perf$userId)), 5, pattern = "[A-Za-z0-9]"), each=12)
+# change group levels
+levels(df_perf_sim$group)[levels(df_perf_sim$group)=="C"] <- "E2"
+levels(df_perf_sim$group)[levels(df_perf_sim$group)=="E"] <- "E3"
+# add noise to shubNoNew variable (making sure that no value dips below 2, all participants start around 15 Shubs)
+set.seed(42)
+df_perf_sim$shubNoNew=df_perf_sim$shubNoNew+round(rnorm(length(df_perf_sim$shubNoNew),mean = -20, sd = 10)) # -5, 5
+df_perf_sim$shubNoNew[df_perf_sim$shubNoNew<2] = 2
+df_perf_sim$shubNoNew[df_perf_sim$trialNo==1] = round(rnorm(length(df_perf_sim$shubNoNew[df_perf_sim$trialNo==1]),mean=14.5, sd=0.1))
+
+# merge both DFs
+df_perf_sim=rbind(df_perf,df_perf_sim)
+
+## make plots to look at result:
+
+# make group a factor
+df_perf_sim$group=as.factor(df_perf_sim$group)
+
+# First peek at the data, getting min / max / median:
+print("First peek at the data, getting min / max / median:")
+print(tapply(df_perf_sim$shubNoNew, df_perf_sim$group, summary))
+# CHECK: What can we see here? Do groups differ wrt the range? Does one have smaller minimal values / larger maximal scores?
+
+#Next is visual assessment: Plot scores per participant per trial and also averages over blocks (aka spaghetti plot):
+
+# plot data per trial
+H1.1_p_ShubsPerTrial <- ggplot(df_perf_sim, aes(x=factor(trialNo), y=shubNoNew, group = userId, color= group))+ 
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  labs(title="Development of pack size by group over trials",x="Trial", y = "Pack size")+
+  theme_bw(base_size = 10)+
+  scale_x_discrete(breaks=1:max(df_perf_sim$trialNo))+
+  theme(legend.position="bottom")
+
+# prepare line plot to show sd and sem
+data_summary <- function(data, varname, groupnames){
+  library(dplyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      SEM = sd(x[[col]], na.rm=TRUE),
+      sem = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  return(data_sum)
+}
+
+df_ShubsPerTrial_summary=data_summary(df_perf_sim, varname="shubNoNew",groupnames=c("group","trialNo"))
+
+# plot data per trial
+H1.1_p_ShubsPerTrial_summary <- ggplot(df_ShubsPerTrial_summary, aes(x=factor(trialNo), y=mean, group = group, color= group))+
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.1)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Mean pack size by group over trials",x="Trial", y = " Mean pack size")+
+  theme_bw(base_size = 10)+
+  scale_x_discrete(breaks=1:max(df_perf_sim$trialNo))+
+  theme(legend.position="bottom")
+
+# plot averaged data per block
+df_perf_sim_blockStats<-aggregate(shubNoNew ~ blockNo * userId + group, data=df_perf_sim, FUN = function(x) c(mean = mean(x), SEM = sd(x), sem = sd(x)/sqrt(length(x))))
+df_ShubsPerBlock_summary=data_summary(df_perf_sim, varname="shubNoNew",groupnames=c("group","blockNo"))
+
+H1.1_p_ShubsPerBlock <- ggplot(df_perf_sim_blockStats, aes(x=blockNo, y=shubNoNew[,"mean"], group = userId, color= group))+ 
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=shubNoNew[,"mean"]-shubNoNew[,"sem"], ymax=shubNoNew[,"mean"]+shubNoNew[,"sem"],fill=group), linetype=2, alpha=0.1)+
+  ##facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of pack size by group over blocks",x="Block", y = "pack size")+
+  theme_bw(base_size = 10)+
+  scale_x_continuous(breaks=1:max(df_perf_sim$blockNo))+
+  theme(legend.position="bottom")
+
+# plot data per block
+H1.1_p_ShubsPerBlock_summary <- ggplot(df_ShubsPerBlock_summary, aes(x=blockNo, y=mean, group = group, color= group))+ 
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.1)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Mean pack size by group over blocks",x="Block", y = "Mean pack size")+
+  theme_bw(base_size = 10)+
+  scale_x_continuous(breaks=1:max(df_ShubsPerBlock_summary$blockNo))+
+  theme(legend.position="bottom")
+
+```
+
+General infos: 
+
+* At this point, we have `r length(unique(df_perf_sim$userId))` participants. Of those, 
+
+* `r length(unique(df_perf_sim$userId[df_perf_sim$group=="C"]))` participants were in the control condition, 
+
+* `r length(unique(df_perf_sim$userId[df_perf_sim$group=="E"]))` participants in the experimental condition (real),
+
+* `r length(unique(df_perf_sim$userId[df_perf_sim$group=="E2"]))` participants were in another experimental condition (simulated), 
+
+* `r length(unique(df_perf_sim$userId[df_perf_sim$group=="E3"]))` participants were in another experimental condition (simulated).
+
+# Statistical assessment
+
+[...] Comparisons of performance over time between users are performed using R–4.1.1 [@r_core_team_r_2021]. Changes in performance over 12 trials as a measure of learning rate per group are modeled using the lme4 package v.4_1.1-27.1.
+
+In the model testing for differences in terms of user performance, the dependent variable is number of Shubs generated. In the assessment of user's reaction time, we used time needed to reach a feeding decision in each trial as dependent variable.
+The final models include the fixed effects of group, trial number and their interaction. The random-effect structure includes a by-subjects random intercept. 
+Advantages of using this approach include that these models account for correlations of data drawn from the same participant [@detry_analyzing_2016].
+<!--The code is inspired by this 2-part tutotial: https://www.youtube.com/watch?v=AWInLxpiZuA; https://www.youtube.com/watch?v=YsD8b5KYdMw -->
+
+Model fits are compared with the analysis of variance function of the stats package.
+Effect sizes are computed in terms of $\eta_{\text{p}}^{2}$ using the effectsize package v.0.5.
+
+Significant main effects or interactions are followed up by computing the pairwise estimated marginal means. All post-hoc analyses reported are bonerroni corrected to account for multiple comparisons.
+
+*H1) Which CFE is most helpful to users tasked to discover unknown relationships in data. We will evaluate both objective as well as subjective understandability.*
+
+That means, we expect users in different conditions to differ in terms of
+
+* H1.1) performance over time (i.e., number of Shubs generated), *AND*
+
+* H1.2) reaction time (some will become quicker in the final blocks, because choosing the right plants will become more automatic).
+
+### H1.1) Users in different conditions to differ in terms of performance over time (i.e., number of Shubs generated)
+
+```{r echo=FALSE, fig.height = 7, fig.width = 7, fig.align = "center"}
+
+# Setting up our LME model (as a 4x12 Anova, group by trial)
+# mixed design, with one within-subjects IV (trial) and one between subjects IV (group)
+# investigating the effect of both on Shubs generated.
+# Note that we add a random intercept for the participant by stating + (1|userId)
+# This makes it repeated measures, as we control for the random effect of 
+# one person doing something mutliple times.
+
+df_perf_sim$trialNo=as.numeric(df_perf_sim$trialNo)
+df_perf_sim$group=as.numeric(df_perf_sim$group)
+
+ShubNo_effect= lmer(shubNoNew ~ trialNo*group + (1|userId), data = df_perf_sim) # linear model DV ShubNoNew predicted by the IV (trials, i.e. time)
+
+# ------------------------------------------ #
+# ------------------------------------------ #
+# SAMPLE SIZE ESTIMATION USING mixedpower
+
+# try out library(mixedpower)
+# # install mixedpower
+# if (!require("devtools")) {
+#     install.packages("devtools", dependencies = TRUE)}
+# devtools::install_github("DejanDraschkow/mixedpower") # mixedpower is hosted on GitHub
+
+library(mixedpower)
+
+# ------------------------------------------ #
+# INFORMATION ABOUT MODEL USED FOR SIMULATION
+
+model <- ShubNo_effect # which model do we want to simulate power for?
+data <- df_perf_sim # data used to fit the model
+fixed_effects <- c("trialNo", "group") # all fixed effects specified
+simvar <- "userId" # # which random effect do we want to vary in the simulation? SHOULD BE NUMERIC! Soo:
+# add dummy numeric variable for userId
+df_perf_sim$userId_num=rep(1:length(unique(df_perf_sim$userId)),each=12)
+steps <- c(20, 40, 60, 80, 100) # which sample sizes do we want to look at?
+critical_value <- 2 # which t/z value do we want to use to test for significance?
+# WHY 2?
+# "For our use case we want to apply the same threshold to all specified effects, and thus will enter a t-value of 2 (critical_value = 2) into the simulation as this will reflect an alpha level of 5% (Baayen et al., 2008)." From "Estimating power in (generalized) linear mixed models: an open introduction and tutorial in R" by Kumle et al.; referring to: 
+# Baayen, Davidson, D. J., & Bates, D. M. (2008). Mixed-effects modeling with crossed random effects for subjects and items. Journal of Memory and Language, 59(4), 390– 412. https://doi.org/10.1016/j.jml.2007.12.005
+
+n_sim <- 100 # how many single simulations should be used to estimate power?
+
+# ------------------------------------------ #
+# RUN SIMULATION
+power_ShubNo_effect <- mixedpower(model = ShubNo_effect, data = df_perf_sim, fixed_effects = c("trialNo", "group"), simvar = "userId_num", steps = c(20, 40, 60, 80, 100), critical_value = 2, n_sim = 1000)
+
+# save it so we don't have to wait so long again:
+save(power_ShubNo_effect,file="power_ShubNo_effect.Rda")
+
+## load simulation results:
+#load("power_ShubNo_effect.Rda")
+
+# look at results:
+power_ShubNo_effect
+
+# make a plot:
+multiplotPower(power_ShubNo_effect, filename = "power_ShubNo_effect.png")
+
+```
+
+
+### H1.2) Users in the plausible condition become quicker in deciding what plants to choose in the final blocks, because choice of the right plants will become more automatic
+
+Again, first peek at the data: Descriptive stats + plotting the RT trajectories per trial and block for each person individually.
+
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = "center"}
+
+# Descriptive stats
+
+# make group a factor
+df_rt$group=as.factor(df_rt$group)
+
+# First peek at the data, getting min / max / median:
+print("First peek at the data, getting min / max / median:")
+print(tapply(df_rt$timeStableUntilFeeding, df_rt$group, summary))
+# CHECK: What can we see here? Do groups differ wrt the range? Does one have smaller minimal values / larger maximal scores?
+
+#Next is visual assessment: Plot scores per participant per trial and also averages over blocks (aka spaghetti plot):
+
+# plot data per trial
+H1.2_p_RTPerTrial <- ggplot(df_rt, aes(x=TrialNr, y=timeStableUntilFeeding, group = userId, color= group))+
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of time needed to reach\nfeeding decision by group over trials",x="Trial", y = "Reaction time (ms)")+
+  theme_bw(base_size = 10)+
+  #scale_y_continuous(limits = c(0, 100))+
+  scale_x_discrete(breaks=1:max(df_perf_sim$trialNo))+
+  #scale_colour_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  theme(legend.position="bottom")
+
+# prepare line plot to show sd and sem
+df_RTPerTrial_summary=data_summary(df_rt, varname="timeStableUntilFeeding",groupnames=c("group","TrialNr"))
+
+# plot data per trial
+H1.2_p_RTPerTrial_summary <- ggplot(df_RTPerTrial_summary, aes(x=TrialNr, y=mean, group = group, color= group))+
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.1)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of mean time needed to reach\nfeeding decision by group over trials",x="Trial", y = " Mean Reaction Time")+
+  theme_bw(base_size = 10)+
+  #scale_y_continuous(limits = c(0, 100))+
+  scale_x_discrete(breaks=1:max(df_perf_sim$trialNo))+
+  scale_colour_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  scale_fill_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  theme(legend.position="bottom")
+
+
+# plot averaged data per block
+df_rt_blockStats<-aggregate(timeStableUntilFeeding ~ BlockNr * userId + group, data=df_rt, FUN = function(x) c(mean = mean(x), sd = sd(x), sem = sd(x)/sqrt(length(x))))
+
+df_RTPerBlock_summary=data_summary(df_rt, varname="timeStableUntilFeeding",groupnames=c("group","BlockNr"))
+
+H1.2_p_RTPerBlock <- ggplot(df_rt_blockStats, aes(x=BlockNr, y=timeStableUntilFeeding[,"mean"], group = userId, color= group))+
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=timeStableUntilFeeding[,"mean"]-timeStableUntilFeeding[,"sem"], ymax=timeStableUntilFeeding[,"mean"]+timeStableUntilFeeding[,"sem"],fill=group), linetype=2, alpha=0.1)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of time needed to reach\nfeeding decision by group over blocks",x="Block", y = "Reaction time (ms)")+
+  theme_bw(base_size = 10)+
+  #scale_y_continuous(limits = c(0, 100))+
+  scale_x_continuous(breaks=1:max(df_perf$blockNo))+
+  scale_colour_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  scale_fill_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  theme(legend.position="bottom")
+
+H1.2_p_RTPerBlock_summary <- ggplot(df_RTPerBlock_summary, aes(x=BlockNr, y=mean, group = group, color= group))+
+  geom_point(alpha = 0.5)+
+  geom_line()+
+  geom_ribbon(aes(ymin=mean-sem, ymax=mean+sem,fill=group), linetype=2, alpha=0.1)+
+  #facet_wrap(vars(group),nrow = 2, ncol = 1)+
+  labs(title="Development of mean time needed to reach\nfeeding decision by group over blocks",x="Block", y = " Mean Reaction Time")+
+  theme_bw(base_size = 10)+
+  #scale_y_continuous(limits = c(0, 100))+
+  scale_x_discrete(breaks=1:max(df_perf_sim$trialNo))+
+  scale_colour_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  scale_fill_manual("Group", values=c(Ccol,Pcol), labels = c("Closest", "Plausible"))+
+  theme(legend.position="bottom")
+
+# in separate facets for better visibility
+H1.2_p_RTPerTrial_facet <- H1.2_p_RTPerTrial + facet_wrap(vars(group),nrow = 2, ncol = 1) + theme_bw(base_size = 10)
+H1.2_p_RTPerBlock_facet <- H1.2_p_RTPerBlock + facet_wrap(vars(group),nrow = 2, ncol = 1) + theme_bw(base_size = 10)
+
+# put all plots together
+H1.2_figure1_RTData <- ggarrange(H1.2_p_RTPerTrial,H1.2_p_RTPerBlock,
+                    ncol = 1, nrow = 2, heights=c(4,4), common.legend = TRUE)
+# save
+ggsave("../Figures/H1.2_figure1_RTData_PAZ_P3.pdf",width = 5, height = 4,)
+
+# put all plots together
+H1.2_figure1_RTData_summary <- ggarrange(H1.2_p_RTPerTrial_summary,H1.2_p_RTPerBlock_summary,
+                    ncol = 1, nrow = 2, heights=c(4,4), common.legend = TRUE)
+# save
+ggsave("../Figures/H1.2_figure1_RTData_summary_PAZ_P3.pdf",width = 5, height = 4,)
+
+# show
+print("Display figures showing development of reaction times over trials / blocks:")
+H1.2_figure1_RTData
+
+# last, make trialno a factor and show again a summary of data
+df_rt$TrialNr = as.factor(df_rt$TrialNr)
+#summary(df_rt)
+
+```
+
+Now on to the statistics.
+
+```{r echo=FALSE}
+
+# setting up our LME model (as a 2x15 Anova, group by trial)
+
+# mixed design, with one within-subjects IV (trial) and one between subjects IV (group)
+# investigating the effect of reaction times.
+
+# Note that we add a random intercept for the participant by stating + (1|userId)
+# This makes it repeated measures, as we control for the random effect of
+# one person doing something mutliple times.
+RT_effect= lmer(timeStableUntilFeeding ~ group*TrialNr + (1|userId), data = df_rt) # linear model DV ShubNoNew predicted by the IV (trials, i.e. time)
+
+# ------------------------------------------ #
+# ------------------------------------------ #
+# SAMPLE SIZE ESTIMATION USING mixedpower
+
+# try out library(mixedpower)
+# # install mixedpower
+# if (!require("devtools")) {
+#     install.packages("devtools", dependencies = TRUE)}
+# devtools::install_github("DejanDraschkow/mixedpower") # mixedpower is hosted on GitHub
+
+library(mixedpower)
+
+# ------------------------------------------ #
+# INFORMATION ABOUT MODEL USED FOR SIMULATION
+
+model <- RT_effect # which model do we want to simulate power for?
+data <- df_rt # data used to fit the model
+fixed_effects <- c("TrialNr", "group") # all fixed effects specified
+simvar <- "userId" # # which random effect do we want to vary in the simulation? SHOULD BE NUMERIC! Soo:
+# add dummy numeric variable for userId
+df_rt$userId_num=rep(1:8,each=12)
+steps <- c(20, 40, 60, 80, 100) # which sample sizes do we want to look at?
+critical_value <- 2 # which t/z value do we want to use to test for significance?
+n_sim <- 100 # how many single simulations should be used to estimate power?
+
+# ------------------------------------------ #
+# RUN SIMULATION
+#power_RT_effect <- mixedpower(model = RT_effect, data = df_rt, fixed_effects = c("TrialNr", "group"), simvar = "userId_num", steps = c(20, 40, 60, 80, 100), critical_value = 2, n_sim = 1000)
+## save it so we don't have to wait so long again:
+#save(power_RT_effect,file="power_RT_effect.Rda")
+
+# load simulation results:
+load("power_RT_effect.Rda")
+
+# look at results:
+power_RT_effect
+
+# make a plot:
+multiplotPower(power_RT_effect, filename = "power_RT_effect.png")
+
+```
+
+# References
